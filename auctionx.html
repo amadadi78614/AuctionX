@@ -1,0 +1,1319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mobile Auction Application (Multi-Role)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #EF4444; /* Red 500 */
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        /* Simulate mobile screen container */
+        .mobile-container {
+            max-width: 420px;
+            margin: 0 auto;
+            min-height: 100vh;
+            background-color: white;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
+        }
+        .bid-button {
+            transition: all 0.2s;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+        }
+        .bid-button:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+        .bid-button:active {
+            transform: translateY(1px);
+            box-shadow: none;
+        }
+        .timer-glow {
+            text-shadow: 0 0 5px rgba(239, 68, 68, 0.5);
+        }
+        .condition-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        /* Hide all views initially */
+        .app-view { display: none; }
+        .app-view.active { display: block; }
+
+        /* Tab styling for dashboards and auth */
+        .tab-button {
+            border-bottom: 2px solid transparent;
+            cursor: pointer;
+        }
+        .tab-button.active {
+            border-color: var(--primary-color);
+            color: var(--primary-color);
+        }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .google-button {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: white;
+            color: #1f2937;
+            border: 1px solid #d1d5db;
+            padding: 12px;
+            border-radius: 12px;
+            font-weight: 600;
+            transition: background-color 0.15s;
+        }
+        .google-button:hover {
+            background-color: #f3f4f6;
+        }
+        .google-button svg {
+            width: 20px;
+            height: 20px;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <!-- Main Mobile Container -->
+    <div class="mobile-container overflow-hidden rounded-xl" id="app-container">
+        
+        <!-- App Content Area - Views will be rendered here dynamically -->
+        <div id="app-content">
+            <!-- Loading or Role Selection View will appear here -->
+            <div class="p-8 text-center text-gray-500">Loading Application...</div>
+        </div>
+
+        <!-- Modal for Bid Log (Shared across views) -->
+        <div id="bidLogModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+            <div class="bg-white rounded-xl w-full max-w-sm max-h-[80vh] overflow-y-auto p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-xl font-bold">Bidding History</h3>
+                    <button onclick="document.getElementById('bidLogModal').classList.add('hidden')" class="text-gray-400 hover:text-gray-700">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+                <ul id="bid-history-list" class="space-y-2">
+                    <!-- Bid entries will be added here from Firestore -->
+                </ul>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Include the configuration file BEFORE the main script -->
+    <script src="config.js"></script>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        // REMOVED: GoogleAuthProvider, signInWithPopup as they cause "auth/unauthorized-domain" error in this environment
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateCurrentUser } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, runTransaction, setDoc, getDoc, collection, getDocs, addDoc, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        setLogLevel('Debug'); // Enable Firestore logs for debugging
+
+        // --- GLOBAL APP STATE & CONFIG ---
+        // Using a generic constant for opponent and defaulting to email for user identity
+        const OPPONENT_NAME = 'Bidder***789';
+
+        const APP_STATE = {
+            view: 'loading', // loading, auth_view, role_select, bidder_dashboard, host_dashboard, create_auction, live_auction
+            role: null, // 'bidder', 'host', null
+            currentAuctionId: null,
+            liveAuctionData: { currentBid: 0, highestBidder: OPPONENT_NAME, status: 'LIVE', bids: [] },
+            timerInterval: null,
+            timeLeft: 15,
+            newListingImage: null, // To temporarily hold the Base64 image data
+            creationMode: 'single', // NEW: Default mode for auction creation
+        };
+
+        // --- FIRESTORE CONFIG AND SETUP ---
+        // These variables are now provided by config.js
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        const app = firebaseConfig ? initializeApp(firebaseConfig) : null;
+        const auth = app ? getAuth(app) : null;
+        const db = app ? getFirestore(app) : null;
+
+        let userId = 'anonymous_user'; // Public ID, derived from UID
+        let isAuthenticated = false; // Auth state flag
+        let userEmailOrId = 'Guest'; // Used for displaying the user's name/email in UI
+
+        // --- FIRESTORE COLLECTION PATHS ---
+        const LISTINGS_COLLECTION = `artifacts/${appId}/public/data/listings`;
+        const AUCTIONS_COLLECTION = `artifacts/${appId}/public/data/auctions`;
+        
+        // --- CURRENCY CONFIG AND BID LOGIC (ZAR is base for internal storage) ---
+        const CURRENCIES = {
+            'ZAR': { symbol: 'R', rate: 1.0 },
+            'USD': { symbol: '$', rate: 0.054 }
+        };
+        const BID_INCREMENT_ZAR = 500;
+        const OPPONENT_COUNTER_THRESHOLD_ZAR = 1000;
+        // Max file size set to 3MB (3,000,000 bytes) as requested
+        const MAX_IMAGE_FILE_SIZE = 3000000; 
+
+        // --- AUTHENTICATION AND INITIALIZATION ---
+
+        async function authenticateAndInit() {
+            if (!auth) return;
+
+            // 1. Handle initial custom token sign-in (if provided by Canvas)
+            if (initialAuthToken) {
+                try {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } catch (e) {
+                    console.error("Custom token sign-in failed. Falling back to anonymous:", e);
+                }
+            } 
+            
+            // 2. Sign in anonymously if no valid user is set up yet (crucial for security rule access)
+            if (!auth.currentUser) {
+                 await signInAnonymously(auth).catch(e => console.error("Anonymous sign-in failed:", e));
+            }
+
+
+            // 3. Set up the state listener
+            onAuthStateChanged(auth, (user) => {
+                if (user && !user.isAnonymous) {
+                    userId = user.uid;
+                    isAuthenticated = true;
+                    // Use email if available, otherwise use UID
+                    userEmailOrId = user.email || user.uid; 
+                } else if (user && user.isAnonymous) {
+                    // Anonymous user for testing/guest viewing
+                    userId = user.uid; 
+                    isAuthenticated = false; 
+                    userEmailOrId = 'Guest';
+                } else {
+                    // Logged out state
+                    userId = 'anonymous_user';
+                    isAuthenticated = false;
+                    userEmailOrId = 'Guest';
+                }
+                
+                // Set role from local storage if authenticated, otherwise clear it
+                if (isAuthenticated) {
+                    APP_STATE.role = localStorage.getItem('auction_user_role');
+                } else {
+                    localStorage.removeItem('auction_user_role');
+                    APP_STATE.role = null;
+                }
+
+                // Initial render or re-render upon state change
+                renderApp(); 
+            });
+        }
+
+        // --- AUTH FUNCTIONS (Globally exposed for form handling) ---
+        
+        window.handleSignUp = async function(event) {
+            event.preventDefault();
+            const form = event.target;
+            const email = form.email.value;
+            const password = form.password.value;
+            const statusEl = document.getElementById('auth-status');
+            
+            statusEl.textContent = 'Registering...';
+            statusEl.classList.remove('hidden', 'text-green-600', 'text-red-600');
+            statusEl.classList.add('text-gray-600');
+            
+            try {
+                if (password.length < 6) {
+                    throw new Error("Password must be at least 6 characters.");
+                }
+
+                if (auth.currentUser) {
+                    await signOut(auth);
+                    // FIX: Add a short delay to ensure the session token is fully invalidated
+                    await new Promise(resolve => setTimeout(resolve, 50)); 
+                } 
+                
+                await createUserWithEmailAndPassword(auth, email, password);
+                
+                statusEl.textContent = 'Registration successful! Please select your role.';
+                statusEl.classList.add('text-green-600');
+                
+            } catch (error) {
+                console.error("Sign up failed:", error);
+                
+                const errorCode = error.code;
+                let message = 'Registration failed.';
+                if (errorCode === 'auth/email-already-in-use') {
+                    message = 'That email is already in use.';
+                } else if (errorCode === 'auth/weak-password') {
+                    message = 'Password is too weak (must be 6+ chars).';
+                } else if (errorCode === 'auth/operation-not-allowed') {
+                    message = 'Registration failed due to environment security policy. Please try clearing the app data and trying again.';
+                } else {
+                    message = error.message || 'Registration failed.';
+                }
+
+                statusEl.textContent = message;
+                statusEl.classList.remove('text-gray-600');
+                statusEl.classList.add('text-red-600');
+            }
+        }
+
+        window.handleSignIn = async function(event) {
+            event.preventDefault();
+            const form = event.target;
+            const email = form.email.value;
+            const password = form.password.value;
+            const statusEl = document.getElementById('auth-status');
+            
+            statusEl.textContent = 'Signing in...';
+            statusEl.classList.remove('hidden', 'text-green-600', 'text-red-600');
+            statusEl.classList.add('text-gray-600');
+
+            try {
+                if (auth.currentUser) {
+                    await signOut(auth);
+                    // FIX: Add a short delay to ensure the session token is fully invalidated
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                }
+                
+                await signInWithEmailAndPassword(auth, email, password);
+                statusEl.textContent = 'Sign in successful! Redirecting...';
+                statusEl.classList.add('text-green-600');
+            } catch (error) {
+                console.error("Sign in failed:", error);
+                const errorCode = error.code;
+                let message = 'Sign in failed. Check credentials.';
+                if (errorCode === 'auth/user-not-found' || errorCode === 'auth/wrong-password' || errorCode === 'auth/invalid-credential') {
+                    message = 'Invalid email or password.';
+                } else if (errorCode === 'auth/operation-not-allowed') {
+                     message = 'Sign in failed due to environment security policy. Please try clearing the app data and trying again.';
+                }
+                statusEl.textContent = message;
+                statusEl.classList.remove('text-gray-600');
+                statusEl.classList.add('text-red-600');
+            }
+        }
+        
+        // Removed handleGoogleSignIn function due to "auth/unauthorized-domain" error in this environment.
+
+        window.logout = async function() {
+            if (auth) {
+                await signOut(auth);
+                // The onAuthStateChanged listener will handle state cleanup and re-render
+            }
+        }
+
+
+        // --- UTILITY FUNCTIONS ---
+
+        function formatCurrency(amountZAR) {
+            const currentCurrencyCode = localStorage.getItem('current_currency') || 'ZAR';
+            const currency = CURRENCIES[currentCurrencyCode];
+            const convertedAmount = amountZAR * currency.rate;
+            const fractionDigits = currentCurrencyCode === 'USD' ? 2 : 0;
+            return `${currency.symbol}${convertedAmount.toLocaleString(undefined, {
+                minimumFractionDigits: fractionDigits,
+                maximumFractionDigits: fractionDigits
+            })}`;
+        }
+
+        window.switchCurrency = function (code) {
+            localStorage.setItem('current_currency', code);
+            renderApp(); // Re-render the current view to update currency displays
+        }
+        
+        function formatTime(totalSeconds) {
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        }
+        
+        // Make navigate function globally accessible for inline onclick handlers
+        window.navigate = function (view, auctionId = null) {
+            clearInterval(APP_STATE.timerInterval); // Stop any existing timer
+            APP_STATE.timerInterval = null;
+            APP_STATE.view = view;
+            APP_STATE.currentAuctionId = auctionId;
+            renderApp();
+        }
+
+        // --- TIMER & AUCTION END LOGIC (Simplified for this file size) ---
+
+        function handleAuctionEnd(status, currentBid, highestBidder) {
+            clearInterval(APP_STATE.timerInterval);
+            APP_STATE.timerInterval = null;
+            
+            const timerDisplayEl = document.getElementById('timer-display');
+            const placeBidBtn = document.getElementById('place-bid-btn');
+            const statusMessageEl = document.getElementById('status-message');
+            
+            if (timerDisplayEl) timerDisplayEl.textContent = "ENDED";
+            if (placeBidBtn) placeBidBtn.disabled = true;
+
+            statusMessageEl.classList.remove('hidden', 'text-red-600', 'text-green-600', 'font-extrabold', 'text-lg');
+
+            if (status === 'ENDED_SOLD' && highestBidder === userEmailOrId) {
+                statusMessageEl.textContent = `CONGRATULATIONS! You won the auction for ${formatCurrency(currentBid)}!`;
+                statusMessageEl.classList.add('text-green-600', 'font-extrabold', 'text-lg');
+            } else if (status === 'ENDED_SOLD') {
+                statusMessageEl.textContent = "Auction Ended! Item Sold to the highest bidder.";
+                statusMessageEl.classList.add('text-red-600');
+            } else if (status === 'ENDED_UNSOLD') {
+                statusMessageEl.textContent = "Auction Ended! Reserve price was not met.";
+                statusMessageEl.classList.add('text-gray-600');
+            }
+            statusMessageEl.classList.remove('hidden');
+
+            // Finalize state in Firestore (in a real app, this is server-side)
+            if (db && APP_STATE.currentAuctionId) {
+                const auctionRef = doc(db, AUCTIONS_COLLECTION, APP_STATE.currentAuctionId);
+                setDoc(auctionRef, { 
+                    status: status, 
+                    winnerId: highestBidder === userEmailOrId ? userId : highestBidder 
+                }, { merge: true }).catch(e => console.error("Failed to finalize auction:", e));
+            }
+        }
+
+        function startTimer() {
+            if (APP_STATE.timerInterval) clearInterval(APP_STATE.timerInterval);
+            const timerDisplayEl = document.getElementById('timer-display');
+
+            if (!timerDisplayEl || APP_STATE.liveAuctionData.status !== 'LIVE') return;
+
+            APP_STATE.timerInterval = setInterval(() => {
+                if (APP_STATE.liveAuctionData.status !== 'LIVE') {
+                    clearInterval(APP_STATE.timerInterval);
+                    APP_STATE.timerInterval = null;
+                    return;
+                }
+
+                if (APP_STATE.timeLeft > 0) {
+                    APP_STATE.timeLeft--;
+                    timerDisplayEl.textContent = formatTime(APP_STATE.timeLeft);
+                    
+                    if (APP_STATE.timeLeft <= 10 && APP_STATE.timeLeft > 0) {
+                        timerDisplayEl.classList.add('animate-pulse', 'text-red-700');
+                    } else {
+                        timerDisplayEl.classList.remove('animate-pulse', 'text-red-700');
+                    }
+                } else {
+                    handleAuctionEnd('ENDED_SOLD', APP_STATE.liveAuctionData.currentBid, APP_STATE.liveAuctionData.highestBidder);
+                }
+            }, 1000);
+        }
+
+        // --- FIRESTORE TRANSACTIONAL BIDDING LOGIC (Same as before) ---
+        window.placeBid = async function () {
+            if (APP_STATE.liveAuctionData.status !== 'LIVE' || APP_STATE.role !== 'bidder') return;
+
+            const bidInputEl = document.getElementById('bid-input');
+            const placeBidBtn = document.getElementById('place-bid-btn');
+            const statusMessageEl = document.getElementById('status-message');
+            
+            const bidAmountDisplay = parseInt(bidInputEl.value);
+            const currentCurrencyCode = localStorage.getItem('current_currency') || 'ZAR';
+            const currency = CURRENCIES[currentCurrencyCode];
+            
+            // Convert input to ZAR for internal logic checks
+            const bidAmountZAR = (currentCurrencyCode === 'USD') 
+                               ? Math.round(bidAmountDisplay / currency.rate) 
+                               : bidAmountDisplay;
+
+            const minNextBidZAR = APP_STATE.liveAuctionData.currentBid + BID_INCREMENT_ZAR;
+            
+            if (isNaN(bidAmountZAR) || bidAmountZAR < minNextBidZAR) {
+                statusMessageEl.textContent = `Error: Bid must be at least ${formatCurrency(minNextBidZAR)}.`;
+                statusMessageEl.classList.remove('hidden');
+                return;
+            }
+
+            placeBidBtn.disabled = true;
+
+            try {
+                const auctionRef = doc(db, AUCTIONS_COLLECTION, APP_STATE.currentAuctionId);
+
+                await runTransaction(db, async (transaction) => {
+                    const docSnap = await transaction.get(auctionRef);
+                    if (!docSnap.exists() || docSnap.data().status !== 'LIVE') {
+                        throw "Auction is no longer live.";
+                    }
+
+                    const data = docSnap.data();
+                    const currentHighestBid = data.currentBid || 0;
+                    const minBidCheck = currentHighestBid + BID_INCREMENT_ZAR;
+
+                    if (bidAmountZAR < minBidCheck) {
+                        throw `Bid of ${formatCurrency(bidAmountZAR)} is too low. Min bid is ${formatCurrency(minBidCheck)}.`;
+                    }
+                    
+                    const newBidEntry = {
+                        amount: bidAmountZAR,
+                        bidder: userEmailOrId, // Use authenticated user email
+                        userId: userId, 
+                        time: new Date().getTime(),
+                    };
+
+                    const isWinningBid = (bidAmountZAR - minBidCheck) >= OPPONENT_COUNTER_THRESHOLD_ZAR;
+
+                    const updateData = {
+                        currentBid: bidAmountZAR,
+                        highestBidder: userEmailOrId, // Use authenticated user email
+                        lastUpdate: newBidEntry.time,
+                        bids: [...(data.bids || []), newBidEntry]
+                    };
+
+                    // Opponent Counter-Bid Simulation
+                    if (!isWinningBid) {
+                        const opponentBidAmount = bidAmountZAR + BID_INCREMENT_ZAR;
+                        const opponentBidEntry = {
+                            amount: opponentBidAmount,
+                            bidder: OPPONENT_NAME,
+                            userId: 'opponent_user_id',
+                            time: new Date().getTime() + 10,
+                        };
+                        
+                        updateData.currentBid = opponentBidAmount;
+                        updateData.highestBidder = OPPONENT_NAME;
+                        updateData.bids.push(opponentBidEntry);
+                        
+                        statusMessageEl.textContent = `You have been outbid by ${OPPONENT_NAME}! Place a higher bid now.`;
+                        statusMessageEl.classList.remove('hidden', 'text-green-600');
+                        statusMessageEl.classList.add('text-red-600');
+                    } else {
+                        statusMessageEl.textContent = `Success! Winning Bid Placed! Awaiting timer end.`;
+                        statusMessageEl.classList.remove('hidden', 'text-red-600');
+                        statusMessageEl.classList.add('text-green-600');
+                    }
+                    
+                    transaction.update(auctionRef, updateData);
+                });
+
+                // Extend timer if new bid placed under 10 seconds
+                if (APP_STATE.timeLeft <= 10) {
+                    APP_STATE.timeLeft = 15;
+                    document.getElementById('status-message').textContent = `Success! Time Extended to 15 seconds.`;
+                }
+                
+                startTimer();
+
+            } catch (error) {
+                console.error("Bid Transaction Failed:", error);
+                const errorMessage = error.message || String(error);
+                statusMessageEl.textContent = `Bid failed: ${errorMessage}`;
+                statusMessageEl.classList.remove('hidden');
+                statusMessageEl.classList.add('text-red-600');
+            } finally {
+                placeBidBtn.disabled = false;
+            }
+        }
+
+
+        // --- NEW AUTH VIEW RENDERING ---
+        
+        window.switchAuthTab = function(tabName) {
+            document.querySelectorAll('.auth-tab-button').forEach(btn => {
+                btn.classList.remove('active', 'text-red-600', 'border-red-600');
+                btn.classList.add('text-gray-500', 'border-transparent');
+            });
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+
+            document.getElementById(`tab-btn-${tabName}`).classList.add('active', 'text-red-600', 'border-red-600');
+            document.getElementById(`tab-content-${tabName}`).classList.add('active');
+        }
+
+        function renderAuthView() {
+            const html = `
+                <div class="p-8 text-center app-view active">
+                    <h2 class="text-3xl font-extrabold text-gray-800 mb-2">Welcome to Auction App</h2>
+                    <p class="text-gray-600 mb-6">Sign in or create an account to start bidding.</p>
+                    
+                    <div class="flex border-b border-gray-200 mb-6">
+                        <button id="tab-btn-signin" onclick="switchAuthTab('signin')" class="auth-tab-button w-1/2 py-3 text-center font-semibold transition active text-red-600 border-red-600">Sign In</button>
+                        <button id="tab-btn-signup" onclick="switchAuthTab('signup')" class="auth-tab-button w-1/2 py-3 text-center font-semibold text-gray-500 hover:text-red-500">Sign Up</button>
+                    </div>
+
+                    <p id="auth-status" class="text-center text-sm mb-4 hidden"></p>
+
+                    <!-- Removed Google Sign-in button due to auth/unauthorized-domain error -->
+
+                    <div id="tab-content-signin" class="tab-content active">
+                        <form onsubmit="handleSignIn(event)" id="signin-form" class="space-y-4">
+                            <input type="email" name="email" placeholder="Email" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                            <input type="password" name="password" placeholder="Password" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                            <button type="submit" class="w-full py-3 bg-red-600 text-white text-lg font-bold rounded-xl shadow-lg hover:bg-red-700 transition">
+                                Sign In
+                            </button>
+                        </form>
+                    </div>
+
+                    <div id="tab-content-signup" class="tab-content">
+                        <form onsubmit="handleSignUp(event)" id="signup-form" class="space-y-4">
+                            <input type="email" name="email" placeholder="Email" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                            <input type="password" name="password" placeholder="Password (Min 6 chars)" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                            <button type="submit" class="w-full py-3 bg-red-600 text-white text-lg font-bold rounded-xl shadow-lg hover:bg-red-700 transition">
+                                Register
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            `;
+            document.getElementById('app-content').innerHTML = html;
+        }
+
+        function renderRoleSelectionView() {
+            const html = `
+                <div class="p-8 text-center app-view active">
+                    <h2 class="text-3xl font-extrabold text-gray-800 mb-4">Select Your Role</h2>
+                    <p class="text-gray-600 mb-8">This determines your dashboard view. You are currently logged in as: ${auth.currentUser.email || 'Authenticated User'}.</p>
+                    
+                    <button onclick="selectRole('bidder')"
+                        class="w-full py-4 mb-4 bg-red-600 text-white text-lg font-bold rounded-xl shadow-lg hover:bg-red-700 transition">
+                        I am a Bidder (Buyer)
+                    </button>
+                    
+                    <button onclick="selectRole('host')"
+                        class="w-full py-4 bg-gray-600 text-white text-lg font-bold rounded-xl shadow-lg hover:bg-gray-700 transition">
+                        I am a Host (Seller)
+                    </button>
+                    
+                    <button onclick="logout()" class="mt-8 text-sm text-gray-500 hover:text-red-500">
+                        Log Out
+                    </button>
+                </div>
+            `;
+            document.getElementById('app-content').innerHTML = html;
+        }
+
+
+        // --- VIEW RENDERING FUNCTIONS (HOST/BIDDER/LIVE) ---
+        
+        function renderHeader(title) {
+            const roleText = APP_STATE.role ? APP_STATE.role.charAt(0).toUpperCase() + APP_STATE.role.slice(1) : 'Guest';
+            const currentCurrencyCode = localStorage.getItem('current_currency') || 'ZAR';
+            // Determine user display for header
+            const headerUserDisplay = isAuthenticated ? (auth.currentUser.email ? auth.currentUser.email.split('@')[0] : 'User') : 'Guest';
+
+
+            return `
+                <header class="p-4 bg-white border-b border-gray-100 flex justify-between items-center sticky top-0 z-10 shadow-sm">
+                    <button onclick="navigate('${APP_STATE.role}_dashboard')" class="text-gray-500 hover:text-red-500">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 15l-3-3m0 0l3-3m-3 3h8m-9 12h5a2 2 0 002-2V8a2 2 0 00-2-2H8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                    </button>
+                    <h1 class="text-xl font-extrabold text-gray-800">${title}</h1>
+                    <div class="flex items-center space-x-3">
+                        <select id="currency-selector" onchange="switchCurrency(this.value)" 
+                                class="p-1 border border-gray-300 rounded-md text-sm font-semibold focus:ring-red-500 focus:border-red-500">
+                            <option value="ZAR" ${currentCurrencyCode === 'ZAR' ? 'selected' : ''}>R (ZAR)</option>
+                            <option value="USD" ${currentCurrencyCode === 'USD' ? 'selected' : ''}>$ (USD)</option>
+                        </select>
+                        <span class="text-sm font-semibold text-gray-700">(${headerUserDisplay})</span>
+                         <button onclick="logout()" class="text-gray-500 hover:text-red-500">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1m0-1v-4m0-4V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h6a2 2 0 002-2v-1"></path></svg>
+                        </button>
+                    </div>
+                </header>
+            `;
+        }
+        
+        window.selectRole = function(role) {
+            localStorage.setItem('auction_user_role', role);
+            APP_STATE.role = role;
+            navigate(`${role}_dashboard`);
+        }
+
+        // --- HOST DASHBOARD AND HISTORY LOGIC (Same as previous) ---
+
+        async function renderHostDashboard() {
+            const header = renderHeader('Host Dashboard');
+            let content = `
+                <div class="p-4 app-view active">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-2xl font-bold text-gray-800">Your Hosting Portal</h2>
+                        <button onclick="navigate('create_auction')"
+                            class="py-2 px-4 bg-red-600 text-white text-sm font-semibold rounded-lg shadow-md hover:bg-red-700 transition">
+                            + Create New Auction
+                        </button>
+                    </div>
+                    
+                    <div class="flex border-b border-gray-200 mb-4">
+                        <button id="host-tab-active" onclick="switchHostTab('active')" class="tab-button w-1/2 py-2 text-center font-semibold transition active">Active Listings</button>
+                        <button id="host-tab-history" onclick="switchHostTab('history')" class="tab-button w-1/2 py-2 text-center font-semibold text-gray-500 hover:text-red-500 transition">Hosted History</button>
+                    </div>
+
+                    <div id="host-listings-container" class="space-y-4">
+                        <div class="text-center p-4 text-gray-500">Loading listings...</div>
+                    </div>
+                </div>
+            `;
+            document.getElementById('app-content').innerHTML = header + content;
+
+            document.getElementById('host-tab-active').classList.add('text-red-600', 'border-red-600');
+            document.getElementById('host-tab-history').classList.add('text-gray-500', 'border-transparent');
+
+
+            window.switchHostTab = function(tabName) {
+                document.querySelectorAll('.tab-button').forEach(btn => {
+                    btn.classList.remove('text-red-600', 'border-red-600', 'active');
+                    btn.classList.add('text-gray-500', 'border-transparent');
+                });
+
+                const activeTabEl = document.getElementById(`host-tab-${tabName}`);
+                activeTabEl.classList.remove('text-gray-500', 'border-transparent');
+                activeTabEl.classList.add('text-red-600', 'border-red-600', 'active');
+
+                loadHostListings(tabName);
+            }
+            
+            loadHostListings('active');
+        }
+
+        async function loadHostListings(statusType) {
+            const container = document.getElementById('host-listings-container');
+            container.innerHTML = '<div class="text-center p-4 text-gray-500">Loading listings...</div>';
+            
+            if (!db) return;
+
+            try {
+                const q = query(collection(db, LISTINGS_COLLECTION), where("hostId", "==", userId));
+                const listingsSnapshot = await getDocs(q);
+                const allListings = listingsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                const auctionStatuses = {};
+                const auctionsSnapshot = await getDocs(collection(db, AUCTIONS_COLLECTION));
+                auctionsSnapshot.forEach(doc => auctionStatuses[doc.id] = doc.data().status || 'LIVE');
+
+
+                let filteredListings;
+
+                if (statusType === 'active') {
+                    filteredListings = allListings.filter(l => auctionStatuses[l.id] === 'LIVE' || l.status === 'pending_live');
+                } else if (statusType === 'history') {
+                    filteredListings = allListings.filter(l => auctionStatuses[l.id] && auctionStatuses[l.id].startsWith('ENDED'));
+                }
+
+                if (filteredListings.length === 0) {
+                    container.innerHTML = `<p class="text-center p-8 text-gray-500">No ${statusType} auctions found.</p>`;
+                    return;
+                }
+
+                container.innerHTML = filteredListings.map(listing => {
+                    const statusText = auctionStatuses[listing.id] || listing.status;
+                    const displayStatus = statusText.replace('ENDED_SOLD', 'SOLD').replace('ENDED_UNSOLD', 'UNSOLD').toUpperCase();
+                    const statusColor = displayStatus === 'SOLD' ? 'bg-green-100 text-green-700' : 
+                                        displayStatus === 'UNSOLD' ? 'bg-yellow-100 text-yellow-700' :
+                                        'bg-blue-100 text-blue-700';
+
+                    return `
+                        <div onclick="navigate('live_auction', '${listing.id}')"
+                            class="p-4 border border-gray-200 rounded-xl shadow-md bg-white hover:shadow-lg transition cursor-pointer">
+                            <h3 class="text-lg font-bold text-gray-900">${listing.itemName}</h3>
+                            <p class="text-sm text-gray-600 truncate">${listing.description}</p>
+                            <div class="mt-2 flex justify-between items-center">
+                                <span class="text-sm font-semibold text-red-600">Starting Bid: ${formatCurrency(listing.startingBid)}</span>
+                                <span class="condition-badge ${statusColor}">${displayStatus}</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+            } catch (e) {
+                container.innerHTML = '<p class="text-center p-8 text-red-500">Error fetching host listings.</p>';
+                console.error("Error fetching host listings:", e);
+            }
+        }
+
+
+        // --- BIDDER DASHBOARD AND HISTORY LOGIC (Same as previous) ---
+        
+        async function renderBidderDashboard() {
+            const header = renderHeader('Bidder Dashboard');
+            let content = `
+                <div class="p-4 app-view active">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4">Bidding Portal</h2>
+
+                    <div class="flex border-b border-gray-200 mb-4">
+                        <button id="bidder-tab-live" onclick="switchBidderTab('live')" class="tab-button w-1/2 py-2 text-center font-semibold transition active">Live Auctions</button>
+                        <button id="bidder-tab-history" onclick="switchBidderTab('history')" class="tab-button w-1/2 py-2 text-center font-semibold text-gray-500 hover:text-red-500 transition">Bidding History</button>
+                    </div>
+
+                    <div id="bidder-listings-container" class="space-y-4">
+                        <div class="text-center p-4 text-gray-500">Loading live auctions...</div>
+                    </div>
+                </div>
+            `;
+            document.getElementById('app-content').innerHTML = header + content;
+
+            document.getElementById('bidder-tab-live').classList.add('text-red-600', 'border-red-600');
+            document.getElementById('bidder-tab-history').classList.add('text-gray-500', 'border-transparent');
+
+
+            window.switchBidderTab = function(tabName) {
+                document.querySelectorAll('.tab-button').forEach(btn => {
+                    btn.classList.remove('text-red-600', 'border-red-600', 'active');
+                    btn.classList.add('text-gray-500', 'border-transparent');
+                });
+
+                const activeTabEl = document.getElementById(`bidder-tab-${tabName}`);
+                activeTabEl.classList.remove('text-gray-500', 'border-transparent');
+                activeTabEl.classList.add('text-red-600', 'border-red-600', 'active');
+
+                loadBidderAuctions(tabName);
+            }
+            
+            loadBidderAuctions('live');
+        }
+
+        async function loadBidderAuctions(statusType) {
+            const container = document.getElementById('bidder-listings-container');
+            container.innerHTML = '<div class="text-center p-4 text-gray-500">Loading auctions...</div>';
+            
+            if (!db) return;
+
+            try {
+                const listingsSnapshot = await getDocs(collection(db, LISTINGS_COLLECTION));
+                const auctionsSnapshot = await getDocs(collection(db, AUCTIONS_COLLECTION));
+
+                const allListings = {};
+                listingsSnapshot.forEach(doc => allListings[doc.id] = doc.data());
+
+                const allAuctions = {};
+                auctionsSnapshot.forEach(doc => allAuctions[doc.id] = doc.data());
+
+                let filteredListings = [];
+
+                for (const id in allAuctions) {
+                    const auction = allAuctions[id];
+                    const listing = allListings[id];
+                    
+                    if (!listing) continue; 
+
+                    const isLive = auction.status === 'LIVE';
+                    // Check if the current authenticated user (by email) has bid
+                    const hasUserBid = auction.bids.some(bid => bid.bidder === userEmailOrId);
+
+                    const listingData = { id, ...listing, ...auction };
+                    
+                    if (statusType === 'live' && isLive) {
+                        filteredListings.push(listingData);
+                    } else if (statusType === 'history') {
+                        // For history, show any ended auction the user bid on
+                        if (auction.status.startsWith('ENDED') && hasUserBid) {
+                            filteredListings.push(listingData);
+                        }
+                    }
+                }
+
+                if (filteredListings.length === 0) {
+                    container.innerHTML = `<p class="text-center p-8 text-gray-500">No ${statusType} auctions found.</p>`;
+                    return;
+                }
+
+                container.innerHTML = filteredListings.map(listing => {
+                    const isLive = listing.status === 'LIVE';
+                    const displayStatus = isLive ? 'LIVE' : listing.status.replace('ENDED_', '').toUpperCase();
+                    const statusColor = displayStatus === 'LIVE' ? 'bg-green-100 text-green-700' : 
+                                        displayStatus === 'SOLD' ? 'bg-red-100 text-red-700' :
+                                        'bg-gray-100 text-gray-700';
+
+                    return `
+                        <div onclick="navigate('live_auction', '${listing.id}')"
+                            class="p-4 border border-gray-200 rounded-xl shadow-md bg-white hover:shadow-lg transition cursor-pointer">
+                            <h3 class="text-lg font-bold text-gray-900">${listing.itemName}</h3>
+                            <p class="text-sm text-gray-600 truncate">Current Bid: ${formatCurrency(listing.currentBid || listing.startingBid)}</p>
+                            <div class="mt-2 flex justify-between items-center">
+                                <span class="text-sm font-semibold text-gray-600">Highest Bidder: ${listing.highestBidder}</span>
+                                <span class="condition-badge ${statusColor}">${displayStatus}</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+            } catch (e) {
+                container.innerHTML = '<p class="text-center p-8 text-red-500">Error fetching auctions.</p>';
+                console.error("Error fetching bidder auctions:", e);
+            }
+        }
+
+        // NEW: Global function to handle image file selection and conversion to Base64
+        window.handleImageUpload = function(event) {
+            const file = event.target.files[0];
+            const statusEl = document.getElementById('listing-status');
+            
+            if (file) {
+                // UPDATED: Check for 3MB limit (3000000 bytes)
+                if (file.size > MAX_IMAGE_FILE_SIZE) { 
+                    statusEl.textContent = 'Error: Image size too large (>3MB). Please select a smaller image.';
+                    statusEl.classList.remove('hidden', 'text-green-600');
+                    statusEl.classList.add('text-red-600');
+                    APP_STATE.newListingImage = null;
+                    document.getElementById('image-preview').classList.add('hidden');
+                    return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const base64Image = e.target.result;
+                    // Save to state
+                    APP_STATE.newListingImage = base64Image;
+
+                    // Fetch the elements INSIDE the asynchronous callback for guaranteed availability
+                    const previewImgEl = document.getElementById('preview-img');
+                    const previewContainerEl = document.getElementById('image-preview');
+
+                    if (previewImgEl && previewContainerEl) {
+                        // Show preview
+                        previewImgEl.src = base64Image;
+                        previewContainerEl.classList.remove('hidden');
+                        statusEl.classList.add('hidden'); // Clear error message if successful
+                    }
+                };
+                reader.readAsDataURL(file);
+            } else {
+                APP_STATE.newListingImage = null;
+                document.getElementById('image-preview').classList.add('hidden');
+            }
+        };
+
+        // NEW: Toggle function for single vs. multiple items
+        window.switchCreationMode = function(mode) {
+            APP_STATE.creationMode = mode;
+            
+            const singleBtn = document.getElementById('mode-single-btn');
+            const multipleBtn = document.getElementById('mode-multiple-btn');
+            const lotDetailsContainer = document.getElementById('lot-details-container');
+            const lotTitleLabel = document.getElementById('lot-title-label');
+            const formTitle = document.getElementById('form-title');
+
+            if (mode === 'single') {
+                singleBtn.classList.add('active', 'text-red-600', 'border-red-600');
+                multipleBtn.classList.remove('active', 'text-red-600', 'border-red-600');
+                multipleBtn.classList.add('text-gray-500', 'border-transparent');
+                lotDetailsContainer.classList.add('hidden');
+                formTitle.textContent = 'Create New Auction Item';
+                lotTitleLabel.textContent = 'Item Title (e.g., "Vintage Camera")';
+            } else {
+                multipleBtn.classList.add('active', 'text-red-600', 'border-red-600');
+                singleBtn.classList.remove('active', 'text-red-600', 'border-red-600');
+                singleBtn.classList.add('text-gray-500', 'border-transparent');
+                lotDetailsContainer.classList.remove('hidden');
+                formTitle.textContent = 'Create New Auction Lot';
+                lotTitleLabel.textContent = 'Lot Title (e.g., "Vintage Camera Collection")';
+            }
+        };
+
+
+        function renderCreateAuctionForm() {
+            const header = renderHeader('Create Auction');
+            const html = `
+                <div class="p-4 app-view active">
+                    <h2 id="form-title" class="text-2xl font-bold text-gray-800 mb-4">...</h2>
+                    
+                    <!-- Auction Type Toggle -->
+                    <div class="flex border-b border-gray-200 mb-6">
+                        <button id="mode-single-btn" onclick="switchCreationMode('single')" class="tab-button w-1/2 py-2 text-center font-semibold transition">Single Item</button>
+                        <button id="mode-multiple-btn" onclick="switchCreationMode('multiple')" class="tab-button w-1/2 py-2 text-center font-semibold transition text-gray-500">Multiple Items (Lot)</button>
+                    </div>
+
+                    <form id="create-auction-form" onsubmit="handleCreateAuction(event)">
+                        
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Item Image (Accesses Gallery/Files)</label>
+                            <input type="file" id="item-image-upload" accept="image/*" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                            <div id="image-preview" class="mt-3 ${APP_STATE.newListingImage ? '' : 'hidden'}">
+                                <img id="preview-img" src="${APP_STATE.newListingImage || ''}" class="w-full h-32 object-contain rounded-lg border border-gray-200 bg-gray-50" alt="Image Preview">
+                            </div>
+                            <p class="text-xs text-red-600 mt-1 font-semibold">
+                                WARNING: Max file size is 3MB. Due to database limits (1MB per document), images larger than ~700KB may cause the upload to fail after conversion to Base64.
+                            </p>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label id="lot-title-label" class="block text-sm font-medium text-gray-700 mb-1">...</label>
+                            <input type="text" id="item-name" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Main Description</label>
+                            <textarea id="item-description" rows="3" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500"></textarea>
+                        </div>
+                        
+                        <!-- LOT DETAILS FIELD - Dynamically hidden/shown -->
+                        <div id="lot-details-container" class="mb-4 p-4 border border-blue-200 bg-blue-50 rounded-lg hidden">
+                            <label class="block text-sm font-bold text-blue-700 mb-1">Lot Details (Items in the Collection)</label>
+                            <p class="text-xs text-blue-600 mb-2">List each item on a new line (e.g., 1. Item A, 2. Item B, ...)</p>
+                            <textarea id="lot-details" rows="4" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500"></textarea>
+                        </div>
+
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Condition</label>
+                            <select id="item-condition" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                                <option value="New">Brand New (Sealed)</option>
+                                <option value="LikeNew" selected>Used - Like New</option>
+                                <option value="Good">Used - Good</option>
+                                <option value="Fair">Used - Fair</option>
+                            </select>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Starting Bid (R)</label>
+                            <input type="number" id="starting-bid" required min="${BID_INCREMENT_ZAR}" value="5000"
+                                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                            <p class="text-xs text-gray-500 mt-1">Bids are stored in ZAR (R).</p>
+                        </div>
+
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Auction Duration (Days)</label>
+                            <select id="auction-duration" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                                <option value="1">1 Day</option>
+                                <option value="3" selected>3 Days</option>
+                            </select>
+                        </div>
+
+                        <button type="submit" id="submit-listing-btn"
+                            class="w-full py-3 bg-red-600 text-white text-lg font-bold rounded-xl shadow-lg hover:bg-red-700 transition">
+                            Submit Auction Listing
+                        </button>
+                        <p id="listing-status" class="text-center mt-3 text-sm hidden"></p>
+                    </form>
+                </div>
+            `;
+            document.getElementById('app-content').innerHTML = header + html;
+
+            // Attach listeners after rendering
+            document.getElementById('item-image-upload').addEventListener('change', handleImageUpload);
+            // Initialize the mode (defaults to 'single')
+            switchCreationMode(APP_STATE.creationMode);
+        }
+
+        window.handleCreateAuction = async function(event) {
+            event.preventDefault();
+            const btn = document.getElementById('submit-listing-btn');
+            const statusEl = document.getElementById('listing-status');
+            
+            btn.disabled = true;
+            statusEl.textContent = 'Submitting...';
+            statusEl.classList.remove('hidden', 'text-green-600', 'text-red-600');
+            statusEl.classList.add('text-gray-600');
+
+            if (!APP_STATE.newListingImage) {
+                statusEl.textContent = 'Error: Please upload an image for the item.';
+                statusEl.classList.remove('text-gray-600');
+                statusEl.classList.add('text-red-600');
+                btn.disabled = false;
+                return;
+            }
+
+            const isMultiple = APP_STATE.creationMode === 'multiple';
+            const lotDetails = isMultiple ? document.getElementById('lot-details').value : undefined;
+            
+            // Validation check for lot details if in multiple mode
+            if (isMultiple && (!lotDetails || lotDetails.trim() === '')) {
+                statusEl.textContent = 'Error: Lot Details are required for Multiple Items mode.';
+                statusEl.classList.remove('text-gray-600');
+                statusEl.classList.add('text-red-600');
+                btn.disabled = false;
+                return;
+            }
+
+            const listingData = {
+                itemName: document.getElementById('item-name').value,
+                description: document.getElementById('item-description').value,
+                // Conditionally include lotDetails
+                ...(isMultiple && { lotDetails: lotDetails }),
+                
+                condition: document.getElementById('item-condition').value,
+                startingBid: parseInt(document.getElementById('starting-bid').value),
+                durationDays: parseInt(document.getElementById('auction-duration').value),
+                hostId: userId,
+                hostName: userEmailOrId, // Use authenticated user email/ID
+                createdAt: new Date().getTime(),
+                status: 'pending_live',
+                itemImage: APP_STATE.newListingImage 
+            };
+
+            try {
+                // 1. Save listing metadata
+                const listingRef = await addDoc(collection(db, LISTINGS_COLLECTION), listingData);
+                
+                // 2. Initialize the live auction document
+                const initialAuctionData = {
+                    currentBid: listingData.startingBid,
+                    highestBidder: 'No Bids Yet',
+                    listingId: listingRef.id,
+                    status: 'LIVE',
+                    bids: [],
+                    startTime: listingData.createdAt,
+                    endTime: listingData.createdAt + (listingData.durationDays * 24 * 60 * 60 * 1000)
+                };
+                await setDoc(doc(db, AUCTIONS_COLLECTION, listingRef.id), initialAuctionData);
+
+                statusEl.textContent = 'Listing and Auction created successfully!';
+                statusEl.classList.remove('text-gray-600');
+                statusEl.classList.add('text-green-600');
+                
+                // Cleanup global state and reset mode
+                APP_STATE.newListingImage = null; 
+                APP_STATE.creationMode = 'single'; 
+
+                // Go back to the host dashboard after a short delay
+                setTimeout(() => navigate('host_dashboard'), 2000);
+
+            } catch (e) {
+                console.error("Error creating auction:", e);
+                // Catch Firestore document size error if it occurs due to the large image
+                const errorMessage = e.message && e.message.includes('maximum size') ? 
+                                     'Error: Image is too large (Base64 exceeds Firestore 1MB limit). Please try a smaller image file.' : 
+                                     'Error: Failed to create auction. See console.';
+                statusEl.textContent = errorMessage;
+                statusEl.classList.remove('text-gray-600');
+                statusEl.classList.add('text-red-600');
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function renderLiveAuctionView(auctionId) {
+            // Fetch listing data first
+            const listingRef = doc(db, LISTINGS_COLLECTION, auctionId);
+            const listingSnap = await getDoc(listingRef);
+
+            if (!listingSnap.exists()) {
+                document.getElementById('app-content').innerHTML = renderHeader('Error') + '<div class="p-8 text-center text-red-600">Auction Listing Not Found.</div>';
+                return;
+            }
+            const listing = listingSnap.data();
+            
+            // Use the Base64 image data if available, otherwise use a placeholder
+            const imageSrc = listing.itemImage 
+                ? listing.itemImage 
+                : `https://placehold.co/420x280/D1D5DB/1F2937?text=${listing.itemName.replace(/\s/g, '+')}`;
+
+            const header = renderHeader('Live Auction');
+            const currentCurrencyCode = localStorage.getItem('current_currency') || 'ZAR';
+            
+            // Generate Lot Details HTML
+            const lotDetailsHtml = listing.lotDetails ? `
+                <div class="mt-4 border-t border-gray-200 pt-4">
+                    <h3 class="text-lg font-bold text-gray-800 mb-2">Lot Contents:</h3>
+                    <ul class="list-disc list-inside space-y-1 text-sm text-gray-600 pl-4">
+                        ${listing.lotDetails.split('\n').filter(item => item.trim() !== '').map(item => `<li>${item.trim()}</li>`).join('')}
+                    </ul>
+                </div>
+            ` : '';
+
+            let content = `
+                <div class="p-4 app-view active">
+                    <div class="flex justify-between items-center mb-2">
+                        <h2 class="text-2xl font-bold text-gray-900">${listing.itemName}</h2>
+                        <span id="item-condition" class="condition-badge bg-green-100 text-green-700">${listing.condition}</span>
+                    </div>
+                    <p class="text-gray-600 mb-4 text-sm">${listing.description}</p>
+                    
+                    ${lotDetailsHtml}
+                    
+                    <div class="rounded-lg overflow-hidden mb-4 shadow-md mt-4">
+                        <img src="${imageSrc}" alt="Auction Item" class="w-full h-auto object-contain max-h-48" onerror="this.onerror=null; this.src='https://placehold.co/420x280/D1D5DB/1F2937?text=Image+Load+Failed';" >
+                    </div>
+                    
+                    <div class="mx-0 p-4 mb-4 bg-red-50 border-2 border-red-300 rounded-xl shadow-lg">
+                        <div class="flex justify-between items-center mb-2">
+                            <p class="text-sm font-medium text-gray-600">Current Highest Bid</p>
+                            <p class="text-sm font-medium text-gray-600">Time Remaining</p>
+                        </div>
+                        <div class="flex justify-between items-end">
+                            <div class="flex flex-col">
+                                <span id="current-bid" class="text-4xl font-extrabold text-red-600">...</span>
+                                <span id="highest-bidder" class="text-xs text-gray-500 mt-1">Highest Bidder: ...</span>
+                            </div>
+                            
+                            <span id="timer-display" class="text-3xl font-extrabold text-red-600 timer-glow">00:00:15</span>
+                        </div>
+                    </div>
+
+                    <!-- Bidding Controls -->
+                    <div class="border-t border-gray-100 bg-white pt-4">
+                        <div id="status-message" class="text-center text-sm mb-3 text-red-600 font-semibold hidden"></div>
+
+                        <div class="mb-3 p-2 text-center bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700 font-semibold">
+                            Bidding as: <span id="user-display">${userEmailOrId}</span>
+                        </div>
+
+                        <div class="flex space-x-2 mb-3">
+                            <button onclick="setBidAmount(500)" class="w-1/3 py-2 text-sm rounded-lg bg-gray-100 text-gray-700 hover:bg-red-50 transition duration-150 border">+<span class="currency-symbol">${CURRENCIES[currentCurrencyCode].symbol}</span>500</button>
+                            <button onclick="setBidAmount(1000)" class="w-1/3 py-2 text-sm rounded-lg bg-gray-100 text-gray-700 hover:bg-red-50 transition duration-150 border">+<span class="currency-symbol">${CURRENCIES[currentCurrencyCode].symbol}</span>1,000</button>
+                            <button onclick="setBidAmount(2500)" class="w-1/3 py-2 text-sm rounded-lg bg-gray-100 text-gray-700 hover:bg-red-50 transition duration-150 border">+<span class="currency-symbol">${CURRENCIES[currentCurrencyCode].symbol}</span>2,500</button>
+                        </div>
+
+                        <div class="flex space-x-2">
+                            <input type="number" id="bid-input" placeholder="Your Bid (Min: ...)"
+                                class="flex-grow p-3 border border-gray-300 rounded-xl focus:ring-red-500 focus:border-red-500 text-lg">
+                            <button id="place-bid-btn" onclick="placeBid()"
+                                class="bid-button w-2/5 bg-red-600 text-white rounded-xl text-lg font-bold">
+                                Bid
+                            </button>
+                        </div>
+                        <p id="min-bid-info" class="text-xs text-gray-500 mt-2 text-center">Minimum required bid: <span id="min-bid-display">...</span> (Increment: <span class="currency-symbol">${CURRENCIES[currentCurrencyCode].symbol}</span>500)</p>
+                    </div>
+                </div>
+            `;
+            document.getElementById('app-content').innerHTML = header + content;
+            
+            // Re-bind click event for Bid Log button
+             document.querySelector('header .flex.items-center.space-x-3').innerHTML += `<button onclick="document.getElementById('bidLogModal').classList.remove('hidden')" class="text-gray-500 hover:text-red-500 ml-3">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                </button>`;
+
+            setupAuctionListener(auctionId, listing);
+        }
+
+        // Adapted from previous logic
+        window.setBidAmount = function (offsetZAR) {
+            const minNextBidZAR = APP_STATE.liveAuctionData.currentBid + BID_INCREMENT_ZAR;
+            const targetZAR = minNextBidZAR + offsetZAR;
+            const currentCurrencyCode = localStorage.getItem('current_currency') || 'ZAR';
+            const currency = CURRENCIES[currentCurrencyCode];
+            const targetDisplayAmount = Math.ceil(targetZAR * currency.rate); 
+            
+            document.getElementById('bid-input').value = targetDisplayAmount;
+        }
+
+        function setupAuctionListener(auctionId, listing) {
+            if (!db) return;
+            const auctionRef = doc(db, AUCTIONS_COLLECTION, auctionId);
+            const currentCurrencyCode = localStorage.getItem('current_currency') || 'ZAR';
+
+            onSnapshot(auctionRef, (docSnap) => {
+                const timerDisplayEl = document.getElementById('timer-display');
+                if (!docSnap.exists() || !timerDisplayEl) return;
+
+                const data = docSnap.data();
+                
+                // Update internal state
+                APP_STATE.liveAuctionData = {
+                    currentBid: data.currentBid || listing.startingBid,
+                    highestBidder: data.highestBidder || 'No Bids Yet',
+                    status: data.status || 'LIVE',
+                    bids: data.bids || []
+                };
+
+                // Update UI elements
+                const minNextBidZAR = APP_STATE.liveAuctionData.currentBid + BID_INCREMENT_ZAR;
+                const minNextBidDisplay = formatCurrency(minNextBidZAR);
+                const bidIncrementDisplay = formatCurrency(BID_INCREMENT_ZAR).replace(CURRENCIES[currentCurrencyCode].symbol, '');
+
+                document.getElementById('current-bid').textContent = formatCurrency(APP_STATE.liveAuctionData.currentBid);
+                document.getElementById('highest-bidder').innerHTML = `Highest Bidder: ${APP_STATE.liveAuctionData.highestBidder}`;
+                document.getElementById('min-bid-display').innerHTML = `${minNextBidDisplay} (Increment: <span class="currency-symbol">${CURRENCIES[currentCurrencyCode].symbol}</span>${bidIncrementDisplay})`;
+                document.getElementById('bid-input').placeholder = `Your Bid (Min: ${minNextBidDisplay})`;
+
+                // Render History
+                const bidHistoryListEl = document.getElementById('bid-history-list');
+                bidHistoryListEl.innerHTML = ''; 
+                const reversedBids = [...APP_STATE.liveAuctionData.bids].reverse(); 
+                reversedBids.forEach(bid => {
+                    const isCurrentUser = bid.bidder === userEmailOrId;
+                    const listItem = document.createElement('li');
+                    listItem.className = `text-sm p-2 rounded-lg flex justify-between ${isCurrentUser ? 'bg-red-100 border border-red-300' : 'bg-gray-50'}`;
+                    const bidTime = new Date(bid.time).toLocaleTimeString();
+                    listItem.innerHTML = `
+                        <span class="font-medium text-gray-700">${bid.bidder}</span>
+                        <span class="font-bold ${isCurrentUser ? 'text-red-700' : 'text-gray-800'}">${formatCurrency(bid.amount)}</span>
+                        <span class="text-xs text-gray-500">${bidTime}</span>
+                    `;
+                    bidHistoryListEl.appendChild(listItem);
+                });
+
+                // Manage timer state
+                if (APP_STATE.liveAuctionData.status !== 'LIVE') {
+                    handleAuctionEnd(APP_STATE.liveAuctionData.status, APP_STATE.liveAuctionData.currentBid, APP_STATE.liveAuctionData.highestBidder);
+                } else if (!APP_STATE.timerInterval) {
+                     APP_STATE.timeLeft = 15; // Reset or start at 15 for simulation
+                     startTimer();
+                }
+            }, (error) => {
+                console.error("Firestore Live Auction Listener error:", error);
+            });
+        }
+        
+        // --- MAIN RENDERER LOGIC ---
+
+        function getAppView() {
+            // Priority 1: Authentication Check (Not logged in or Anonymous)
+            if (!isAuthenticated || (auth.currentUser && auth.currentUser.isAnonymous)) {
+                return 'auth_view';
+            }
+            
+            // Priority 2: Role Selection (Authenticated but Role Undefined)
+            // This is the check that triggers the role selection screen on first login.
+            if (!APP_STATE.role) {
+                return 'role_select';
+            }
+            
+            // Priority 3: Dashboard Navigation (Authenticated and Role Defined)
+            // If the current view is the previous state's auth/role screens (or loading), default to their dashboard.
+            if (APP_STATE.view === 'auth_view' || APP_STATE.view === 'role_select' || APP_STATE.view === 'loading') {
+                return `${APP_STATE.role}_dashboard`;
+            }
+            
+            // Priority 4: Existing App View (e.g., live_auction, create_auction)
+            return APP_STATE.view;
+        }
+        
+        function renderApp() {
+            const currentView = getAppView();
+
+            // Clear timer before rendering new view
+            clearInterval(APP_STATE.timerInterval);
+            APP_STATE.timerInterval = null;
+
+            switch (currentView) {
+                case 'bidder_dashboard':
+                    renderBidderDashboard();
+                    break;
+                case 'host_dashboard':
+                    renderHostDashboard();
+                    break;
+                case 'create_auction':
+                    renderCreateAuctionForm();
+                    break;
+                case 'live_auction':
+                    if (APP_STATE.currentAuctionId) {
+                        renderLiveAuctionView(APP_STATE.currentAuctionId);
+                    } else {
+                        navigate('bidder_dashboard'); 
+                    }
+                    break;
+                case 'role_select':
+                    renderRoleSelectionView(); 
+                    break;
+                case 'auth_view':
+                default:
+                    renderAuthView();
+                    break;
+            }
+        }
+
+        // --- GLOBAL INITIALIZATION ---
+        window.onload = async function () {
+            // Initialize Firestore for global use
+            if(db) {
+                const dbGlobal = db;
+            }
+            
+            await authenticateAndInit();
+        }
+
+    </script>
+</body>
+</html>
