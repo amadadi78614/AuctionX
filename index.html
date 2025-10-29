@@ -3,16 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mobile Auction Application (Multi-Role)</title>
+    <title>AuctionX Mobile Application</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
     <style>
+        /* New "Smarter" Color Scheme */
         :root {
-            --primary-color: #EF4444; /* Red 500 */
+            --primary-color: #E48839; /* Deep Orange/Rust */
+            --secondary-color: #163749; /* Deep Navy/Teal */
+            --neutral-bg: #f7f7f7; 
         }
         body {
             font-family: 'Inter', sans-serif;
-            background-color: #f3f4f6;
+            background-color: var(--neutral-bg);
         }
         /* Simulate mobile screen container */
         .mobile-container {
@@ -25,6 +28,7 @@
         .bid-button {
             transition: all 0.2s;
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+            background-color: var(--primary-color);
         }
         .bid-button:hover {
             opacity: 0.9;
@@ -35,7 +39,7 @@
             box-shadow: none;
         }
         .timer-glow {
-            text-shadow: 0 0 5px rgba(239, 68, 68, 0.5);
+            text-shadow: 0 0 5px rgba(228, 136, 57, 0.5); /* Primary color glow */
         }
         .condition-badge {
             display: inline-block;
@@ -56,34 +60,24 @@
         }
         .tab-button.active {
             border-color: var(--primary-color);
-            color: var(--primary-color);
+            color: var(--secondary-color);
+            font-weight: 700;
         }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
 
-        .google-button {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background-color: white;
-            color: #1f2937;
-            border: 1px solid #d1d5db;
-            padding: 12px;
-            border-radius: 12px;
-            font-weight: 600;
-            transition: background-color 0.15s;
+        /* Custom input focus styles */
+        input:focus, textarea:focus, select:focus {
+            border-color: var(--primary-color) !important;
+            box-shadow: 0 0 0 1px var(--primary-color) !important;
         }
-        .google-button:hover {
-            background-color: #f3f4f6;
-        }
-        .google-button svg {
-            width: 20px;
-            height: 20px;
-            margin-right: 8px;
-        }
+
     </style>
 </head>
 <body class="p-4 md:p-8">
+    
+    <!-- Load local config before app script -->
+    <script src="./config.js"></script> 
 
     <!-- Main Mobile Container -->
     <div class="mobile-container overflow-hidden rounded-xl" id="app-container">
@@ -98,7 +92,7 @@
         <div id="bidLogModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
             <div class="bg-white rounded-xl w-full max-w-sm max-h-[80vh] overflow-y-auto p-6">
                 <div class="flex justify-between items-center mb-4">
-                    <h3 class="text-xl font-bold">Bidding History</h3>
+                    <h3 class="text-xl font-bold text-gray-800">Bidding History</h3>
                     <button onclick="document.getElementById('bidLogModal').classList.add('hidden')" class="text-gray-400 hover:text-gray-700">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                     </button>
@@ -111,12 +105,9 @@
 
     </div>
 
-    <!-- Include the configuration file BEFORE the main script -->
-    <script src="config.js"></script>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        // REMOVED: GoogleAuthProvider, signInWithPopup as they cause "auth/unauthorized-domain" error in this environment
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateCurrentUser } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, runTransaction, setDoc, getDoc, collection, getDocs, addDoc, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
@@ -130,15 +121,15 @@
             view: 'loading', // loading, auth_view, role_select, bidder_dashboard, host_dashboard, create_auction, live_auction
             role: null, // 'bidder', 'host', null
             currentAuctionId: null,
-            liveAuctionData: { currentBid: 0, highestBidder: OPPONENT_NAME, status: 'LIVE', bids: [] },
+            liveAuctionData: { currentBid: 0, highestBidder: OPPONENT_NAME, status: 'LIVE', bids: [], shippingCost: 0 }, // Added shippingCost
             timerInterval: null,
             timeLeft: 15,
             newListingImage: null, // To temporarily hold the Base64 image data
-            creationMode: 'single', // NEW: Default mode for auction creation
+            creationMode: 'single', // Default mode for auction creation
+            shippingDestination: '', // NEW: Bidder's input for shipping destination
         };
 
         // --- FIRESTORE CONFIG AND SETUP ---
-        // These variables are now provided by config.js
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
@@ -359,7 +350,7 @@
             if (timerDisplayEl) timerDisplayEl.textContent = "ENDED";
             if (placeBidBtn) placeBidBtn.disabled = true;
 
-            statusMessageEl.classList.remove('hidden', 'text-red-600', 'text-green-600', 'font-extrabold', 'text-lg');
+            statusMessageEl.classList.remove('hidden', 'text-green-600', 'text-red-600', 'font-extrabold', 'text-lg');
 
             if (status === 'ENDED_SOLD' && highestBidder === userEmailOrId) {
                 statusMessageEl.textContent = `CONGRATULATIONS! You won the auction for ${formatCurrency(currentBid)}!`;
@@ -411,6 +402,49 @@
             }, 1000);
         }
 
+        /**
+         * @description Simulates PUDO (flat rate) and other logistics costs, and handles local pickup.
+         * @param {string} origin Origin City
+         * @param {string} destination Destination City
+         * @param {number} weight Parcel Weight in kg
+         * @returns {number} Estimated shipping cost in ZAR.
+         */
+        window.calculateShippingCost = function (origin, destination, weight) {
+            const originClean = origin.toLowerCase().trim();
+            const destinationClean = destination.toLowerCase().trim();
+            const majorCities = ['johannesburg', 'pretoria', 'durban', 'cape town'];
+            
+            // 1. FREE SHIPPING / LOCAL PICKUP
+            if (originClean === destinationClean) {
+                return 0; // Host and bidder are in the same city/area (Local Pickup / R0 shipping)
+            }
+            
+            // 2. PUDO SIMULATION (Flat rate for small/medium, up to 5kg)
+            if (weight <= 5) {
+                // Mock PUDO-like flat rate for locker/counter delivery
+                return 100; 
+            }
+
+            // 3. COURIER (Non-PUDO / Heavier items, > 5kg)
+            let baseCost = 150; // Higher base cost for larger/heavier courier service
+            
+            // Add cost based on weight (R30 per kg over 5kg)
+            if (weight > 5) {
+                baseCost += (weight - 5) * 30;
+            }
+
+            const isMajorOrigin = majorCities.includes(originClean);
+            const isMajorDestination = majorCities.includes(destinationClean);
+
+            if (isMajorOrigin && isMajorDestination) {
+                // Main regional routes (cheaper rate)
+                return Math.round(baseCost * 1.2); 
+            } else {
+                // Cross-province or remote (higher rate)
+                return Math.round(baseCost * 1.8);
+            }
+        };
+
         // --- FIRESTORE TRANSACTIONAL BIDDING LOGIC (Same as before) ---
         window.placeBid = async function () {
             if (APP_STATE.liveAuctionData.status !== 'LIVE' || APP_STATE.role !== 'bidder') return;
@@ -435,6 +469,15 @@
                 statusMessageEl.classList.remove('hidden');
                 return;
             }
+
+            // CRITICAL CHECK: Ensure shipping cost has been calculated
+            if (APP_STATE.liveAuctionData.shippingCost === 0 && APP_STATE.shippingDestination === '') {
+                 statusMessageEl.textContent = `Error: Please calculate shipping cost first by entering your city.`;
+                 statusMessageEl.classList.remove('hidden', 'text-green-600');
+                 statusMessageEl.classList.add('text-red-600');
+                 return;
+            }
+
 
             placeBidBtn.disabled = true;
 
@@ -521,37 +564,46 @@
         
         window.switchAuthTab = function(tabName) {
             document.querySelectorAll('.auth-tab-button').forEach(btn => {
-                btn.classList.remove('active', 'text-red-600', 'border-red-600');
+                btn.classList.remove('active', 'text-secondary-color', 'border-primary-color');
                 btn.classList.add('text-gray-500', 'border-transparent');
             });
             document.querySelectorAll('.tab-content').forEach(content => {
                 content.classList.remove('active');
             });
 
-            document.getElementById(`tab-btn-${tabName}`).classList.add('active', 'text-red-600', 'border-red-600');
+            const activeBtn = document.getElementById(`tab-btn-${tabName}`);
+            activeBtn.classList.add('active', 'text-secondary-color', 'border-primary-color');
+            activeBtn.classList.remove('text-gray-500'); // Ensure hover color is removed on activation
+
             document.getElementById(`tab-content-${tabName}`).classList.add('active');
         }
 
         function renderAuthView() {
             const html = `
                 <div class="p-8 text-center app-view active">
-                    <h2 class="text-3xl font-extrabold text-gray-800 mb-2">Welcome to Auction App</h2>
+                    <div class="flex items-center justify-center mb-4">
+                        <svg width="40" height="40" viewBox="0 0 100 100" class="mr-2">
+                             <!-- Logo SVG (Simplified) -->
+                            <path fill="#163749" d="M49 65 L49 20 L80 20 L80 30 L63 30 L63 65 Z" transform="rotate(-10 50 50)"/>
+                            <path fill="#E48839" d="M50 50 L50 85 L85 85 L85 50 Z" transform="rotate(35 50 50)"/>
+                        </svg>
+                        <h2 class="text-3xl font-extrabold text-secondary-color">AuctionX</h2>
+                    </div>
+
                     <p class="text-gray-600 mb-6">Sign in or create an account to start bidding.</p>
                     
                     <div class="flex border-b border-gray-200 mb-6">
-                        <button id="tab-btn-signin" onclick="switchAuthTab('signin')" class="auth-tab-button w-1/2 py-3 text-center font-semibold transition active text-red-600 border-red-600">Sign In</button>
-                        <button id="tab-btn-signup" onclick="switchAuthTab('signup')" class="auth-tab-button w-1/2 py-3 text-center font-semibold text-gray-500 hover:text-red-500">Sign Up</button>
+                        <button id="tab-btn-signin" onclick="switchAuthTab('signin')" class="auth-tab-button w-1/2 py-3 text-center font-semibold transition active text-secondary-color border-primary-color hover:text-secondary-color">Sign In</button>
+                        <button id="tab-btn-signup" onclick="switchAuthTab('signup')" class="auth-tab-button w-1/2 py-3 text-center font-semibold text-gray-500 hover:text-secondary-color">Sign Up</button>
                     </div>
 
                     <p id="auth-status" class="text-center text-sm mb-4 hidden"></p>
 
-                    <!-- Removed Google Sign-in button due to auth/unauthorized-domain error -->
-
                     <div id="tab-content-signin" class="tab-content active">
                         <form onsubmit="handleSignIn(event)" id="signin-form" class="space-y-4">
-                            <input type="email" name="email" placeholder="Email" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
-                            <input type="password" name="password" placeholder="Password" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
-                            <button type="submit" class="w-full py-3 bg-red-600 text-white text-lg font-bold rounded-xl shadow-lg hover:bg-red-700 transition">
+                            <input type="email" name="email" placeholder="Email" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-color focus:border-primary-color">
+                            <input type="password" name="password" placeholder="Password" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-color focus:border-primary-color">
+                            <button type="submit" class="w-full py-3 bg-secondary-color text-white text-lg font-bold rounded-xl shadow-lg hover:bg-opacity-90 transition" style="background-color:var(--secondary-color);">
                                 Sign In
                             </button>
                         </form>
@@ -559,9 +611,9 @@
 
                     <div id="tab-content-signup" class="tab-content">
                         <form onsubmit="handleSignUp(event)" id="signup-form" class="space-y-4">
-                            <input type="email" name="email" placeholder="Email" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
-                            <input type="password" name="password" placeholder="Password (Min 6 chars)" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
-                            <button type="submit" class="w-full py-3 bg-red-600 text-white text-lg font-bold rounded-xl shadow-lg hover:bg-red-700 transition">
+                            <input type="email" name="email" placeholder="Email" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-color focus:border-primary-color">
+                            <input type="password" name="password" placeholder="Password (Min 6 chars)" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-color focus:border-primary-color">
+                            <button type="submit" class="w-full py-3 text-white text-lg font-bold rounded-xl shadow-lg hover:bg-opacity-90 transition" style="background-color:var(--primary-color);">
                                 Register
                             </button>
                         </form>
@@ -574,20 +626,20 @@
         function renderRoleSelectionView() {
             const html = `
                 <div class="p-8 text-center app-view active">
-                    <h2 class="text-3xl font-extrabold text-gray-800 mb-4">Select Your Role</h2>
+                    <h2 class="text-3xl font-extrabold text-secondary-color mb-4">Select Your Role</h2>
                     <p class="text-gray-600 mb-8">This determines your dashboard view. You are currently logged in as: ${auth.currentUser.email || 'Authenticated User'}.</p>
                     
                     <button onclick="selectRole('bidder')"
-                        class="w-full py-4 mb-4 bg-red-600 text-white text-lg font-bold rounded-xl shadow-lg hover:bg-red-700 transition">
+                        class="w-full py-4 mb-4 text-white text-lg font-bold rounded-xl shadow-lg hover:opacity-90 transition" style="background-color:var(--primary-color);">
                         I am a Bidder (Buyer)
                     </button>
                     
                     <button onclick="selectRole('host')"
-                        class="w-full py-4 bg-gray-600 text-white text-lg font-bold rounded-xl shadow-lg hover:bg-gray-700 transition">
+                        class="w-full py-4 bg-secondary-color text-white text-lg font-bold rounded-xl shadow-lg hover:bg-opacity-90 transition" style="background-color:var(--secondary-color);">
                         I am a Host (Seller)
                     </button>
                     
-                    <button onclick="logout()" class="mt-8 text-sm text-gray-500 hover:text-red-500">
+                    <button onclick="logout()" class="mt-8 text-sm text-gray-500 hover:text-primary-color">
                         Log Out
                     </button>
                 </div>
@@ -599,26 +651,35 @@
         // --- VIEW RENDERING FUNCTIONS (HOST/BIDDER/LIVE) ---
         
         function renderHeader(title) {
-            const roleText = APP_STATE.role ? APP_STATE.role.charAt(0).toUpperCase() + APP_STATE.role.slice(1) : 'Guest';
             const currentCurrencyCode = localStorage.getItem('current_currency') || 'ZAR';
             // Determine user display for header
             const headerUserDisplay = isAuthenticated ? (auth.currentUser.email ? auth.currentUser.email.split('@')[0] : 'User') : 'Guest';
 
+            // New Logo SVG component for the header
+            const logoSvg = `
+                <svg width="24" height="24" viewBox="0 0 100 100">
+                    <path fill="#163749" d="M49 65 L49 20 L80 20 L80 30 L63 30 L63 65 Z" transform="rotate(-10 50 50)"/>
+                    <path fill="#E48839" d="M50 50 L50 85 L85 85 L85 50 Z" transform="rotate(35 50 50)"/>
+                </svg>
+            `;
 
             return `
                 <header class="p-4 bg-white border-b border-gray-100 flex justify-between items-center sticky top-0 z-10 shadow-sm">
-                    <button onclick="navigate('${APP_STATE.role}_dashboard')" class="text-gray-500 hover:text-red-500">
+                    <button onclick="navigate('${APP_STATE.role}_dashboard')" class="text-gray-500 hover:text-primary-color">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 15l-3-3m0 0l3-3m-3 3h8m-9 12h5a2 2 0 002-2V8a2 2 0 00-2-2H8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
                     </button>
-                    <h1 class="text-xl font-extrabold text-gray-800">${title}</h1>
+                    <div class="flex items-center space-x-2">
+                        ${logoSvg}
+                        <h1 class="text-xl font-extrabold text-secondary-color">AuctionX</h1>
+                    </div>
                     <div class="flex items-center space-x-3">
                         <select id="currency-selector" onchange="switchCurrency(this.value)" 
-                                class="p-1 border border-gray-300 rounded-md text-sm font-semibold focus:ring-red-500 focus:border-red-500">
+                                class="p-1 border border-gray-300 rounded-md text-sm font-semibold focus:ring-primary-color focus:border-primary-color">
                             <option value="ZAR" ${currentCurrencyCode === 'ZAR' ? 'selected' : ''}>R (ZAR)</option>
                             <option value="USD" ${currentCurrencyCode === 'USD' ? 'selected' : ''}>$ (USD)</option>
                         </select>
                         <span class="text-sm font-semibold text-gray-700">(${headerUserDisplay})</span>
-                         <button onclick="logout()" class="text-gray-500 hover:text-red-500">
+                         <button onclick="logout()" class="text-gray-500 hover:text-primary-color">
                             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1m0-1v-4m0-4V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h6a2 2 0 002-2v-1"></path></svg>
                         </button>
                     </div>
@@ -639,16 +700,16 @@
             let content = `
                 <div class="p-4 app-view active">
                     <div class="flex justify-between items-center mb-6">
-                        <h2 class="text-2xl font-bold text-gray-800">Your Hosting Portal</h2>
+                        <h2 class="text-2xl font-bold text-secondary-color">Your Hosting Portal</h2>
                         <button onclick="navigate('create_auction')"
-                            class="py-2 px-4 bg-red-600 text-white text-sm font-semibold rounded-lg shadow-md hover:bg-red-700 transition">
+                            class="py-2 px-4 text-white text-sm font-semibold rounded-lg shadow-md transition" style="background-color:var(--primary-color); hover-bg-opacity-90">
                             + Create New Auction
                         </button>
                     </div>
                     
                     <div class="flex border-b border-gray-200 mb-4">
                         <button id="host-tab-active" onclick="switchHostTab('active')" class="tab-button w-1/2 py-2 text-center font-semibold transition active">Active Listings</button>
-                        <button id="host-tab-history" onclick="switchHostTab('history')" class="tab-button w-1/2 py-2 text-center font-semibold text-gray-500 hover:text-red-500 transition">Hosted History</button>
+                        <button id="host-tab-history" onclick="switchHostTab('history')" class="tab-button w-1/2 py-2 text-center font-semibold text-gray-500 hover:text-secondary-color transition">Hosted History</button>
                     </div>
 
                     <div id="host-listings-container" class="space-y-4">
@@ -658,19 +719,19 @@
             `;
             document.getElementById('app-content').innerHTML = header + content;
 
-            document.getElementById('host-tab-active').classList.add('text-red-600', 'border-red-600');
+            document.getElementById('host-tab-active').classList.add('text-secondary-color', 'border-primary-color', 'font-bold');
             document.getElementById('host-tab-history').classList.add('text-gray-500', 'border-transparent');
 
 
             window.switchHostTab = function(tabName) {
                 document.querySelectorAll('.tab-button').forEach(btn => {
-                    btn.classList.remove('text-red-600', 'border-red-600', 'active');
+                    btn.classList.remove('text-secondary-color', 'border-primary-color', 'active', 'font-bold');
                     btn.classList.add('text-gray-500', 'border-transparent');
                 });
 
                 const activeTabEl = document.getElementById(`host-tab-${tabName}`);
                 activeTabEl.classList.remove('text-gray-500', 'border-transparent');
-                activeTabEl.classList.add('text-red-600', 'border-red-600', 'active');
+                activeTabEl.classList.add('text-secondary-color', 'border-primary-color', 'active', 'font-bold');
 
                 loadHostListings(tabName);
             }
@@ -720,7 +781,7 @@
                             <h3 class="text-lg font-bold text-gray-900">${listing.itemName}</h3>
                             <p class="text-sm text-gray-600 truncate">${listing.description}</p>
                             <div class="mt-2 flex justify-between items-center">
-                                <span class="text-sm font-semibold text-red-600">Starting Bid: ${formatCurrency(listing.startingBid)}</span>
+                                <span class="text-sm font-semibold text-primary-color">Starting Bid: ${formatCurrency(listing.startingBid)}</span>
                                 <span class="condition-badge ${statusColor}">${displayStatus}</span>
                             </div>
                         </div>
@@ -740,11 +801,11 @@
             const header = renderHeader('Bidder Dashboard');
             let content = `
                 <div class="p-4 app-view active">
-                    <h2 class="text-2xl font-bold text-gray-800 mb-4">Bidding Portal</h2>
+                    <h2 class="text-2xl font-bold text-secondary-color mb-4">Bidding Portal</h2>
 
                     <div class="flex border-b border-gray-200 mb-4">
                         <button id="bidder-tab-live" onclick="switchBidderTab('live')" class="tab-button w-1/2 py-2 text-center font-semibold transition active">Live Auctions</button>
-                        <button id="bidder-tab-history" onclick="switchBidderTab('history')" class="tab-button w-1/2 py-2 text-center font-semibold text-gray-500 hover:text-red-500 transition">Bidding History</button>
+                        <button id="bidder-tab-history" onclick="switchBidderTab('history')" class="tab-button w-1/2 py-2 text-center font-semibold text-gray-500 hover:text-secondary-color transition">Bidding History</button>
                     </div>
 
                     <div id="bidder-listings-container" class="space-y-4">
@@ -754,19 +815,19 @@
             `;
             document.getElementById('app-content').innerHTML = header + content;
 
-            document.getElementById('bidder-tab-live').classList.add('text-red-600', 'border-red-600');
+            document.getElementById('bidder-tab-live').classList.add('text-secondary-color', 'border-primary-color', 'font-bold');
             document.getElementById('bidder-tab-history').classList.add('text-gray-500', 'border-transparent');
 
 
             window.switchBidderTab = function(tabName) {
                 document.querySelectorAll('.tab-button').forEach(btn => {
-                    btn.classList.remove('text-red-600', 'border-red-600', 'active');
+                    btn.classList.remove('text-secondary-color', 'border-primary-color', 'active', 'font-bold');
                     btn.classList.add('text-gray-500', 'border-transparent');
                 });
 
                 const activeTabEl = document.getElementById(`bidder-tab-${tabName}`);
                 activeTabEl.classList.remove('text-gray-500', 'border-transparent');
-                activeTabEl.classList.add('text-red-600', 'border-red-600', 'active');
+                activeTabEl.classList.add('text-secondary-color', 'border-primary-color', 'active', 'font-bold');
 
                 loadBidderAuctions(tabName);
             }
@@ -896,15 +957,15 @@
             const formTitle = document.getElementById('form-title');
 
             if (mode === 'single') {
-                singleBtn.classList.add('active', 'text-red-600', 'border-red-600');
-                multipleBtn.classList.remove('active', 'text-red-600', 'border-red-600');
+                singleBtn.classList.add('active', 'text-secondary-color', 'border-primary-color', 'font-bold');
+                multipleBtn.classList.remove('active', 'text-secondary-color', 'border-primary-color', 'font-bold');
                 multipleBtn.classList.add('text-gray-500', 'border-transparent');
                 lotDetailsContainer.classList.add('hidden');
                 formTitle.textContent = 'Create New Auction Item';
                 lotTitleLabel.textContent = 'Item Title (e.g., "Vintage Camera")';
             } else {
-                multipleBtn.classList.add('active', 'text-red-600', 'border-red-600');
-                singleBtn.classList.remove('active', 'text-red-600', 'border-red-600');
+                multipleBtn.classList.add('active', 'text-secondary-color', 'border-primary-color', 'font-bold');
+                singleBtn.classList.remove('active', 'text-secondary-color', 'border-primary-color', 'font-bold');
                 singleBtn.classList.add('text-gray-500', 'border-transparent');
                 lotDetailsContainer.classList.remove('hidden');
                 formTitle.textContent = 'Create New Auction Lot';
@@ -917,7 +978,7 @@
             const header = renderHeader('Create Auction');
             const html = `
                 <div class="p-4 app-view active">
-                    <h2 id="form-title" class="text-2xl font-bold text-gray-800 mb-4">...</h2>
+                    <h2 id="form-title" class="text-2xl font-bold text-secondary-color mb-4">...</h2>
                     
                     <!-- Auction Type Toggle -->
                     <div class="flex border-b border-gray-200 mb-6">
@@ -929,7 +990,7 @@
                         
                         <div class="mb-4">
                             <label class="block text-sm font-medium text-gray-700 mb-1">Item Image (Accesses Gallery/Files)</label>
-                            <input type="file" id="item-image-upload" accept="image/*" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                            <input type="file" id="item-image-upload" accept="image/*" onchange="handleImageUpload(event)" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-color focus:border-primary-color">
                             <div id="image-preview" class="mt-3 ${APP_STATE.newListingImage ? '' : 'hidden'}">
                                 <img id="preview-img" src="${APP_STATE.newListingImage || ''}" class="w-full h-32 object-contain rounded-lg border border-gray-200 bg-gray-50" alt="Image Preview">
                             </div>
@@ -940,24 +1001,37 @@
                         
                         <div class="mb-4">
                             <label id="lot-title-label" class="block text-sm font-medium text-gray-700 mb-1">...</label>
-                            <input type="text" id="item-name" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                            <input type="text" id="item-name" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-color focus:border-primary-color">
                         </div>
                         
                         <div class="mb-4">
                             <label class="block text-sm font-medium text-gray-700 mb-1">Main Description</label>
-                            <textarea id="item-description" rows="3" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500"></textarea>
+                            <textarea id="item-description" rows="3" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-color focus:border-primary-color"></textarea>
                         </div>
                         
                         <!-- LOT DETAILS FIELD - Dynamically hidden/shown -->
                         <div id="lot-details-container" class="mb-4 p-4 border border-blue-200 bg-blue-50 rounded-lg hidden">
-                            <label class="block text-sm font-bold text-blue-700 mb-1">Lot Details (Items in the Collection)</label>
-                            <p class="text-xs text-blue-600 mb-2">List each item on a new line (e.g., 1. Item A, 2. Item B, ...)</p>
-                            <textarea id="lot-details" rows="4" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500"></textarea>
+                            <label class="block text-sm font-bold text-secondary-color mb-1">Lot Details (Items in the Collection)</label>
+                            <p class="text-xs text-secondary-color/80 mb-2">List each item on a new line (e.g., 1. Item A, 2. Item B, ...)</p>
+                            <textarea id="lot-details" rows="4" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-color focus:border-primary-color"></textarea>
                         </div>
-
+                        
+                        <!-- NEW: Shipping Origin Details -->
+                        <h3 class="text-lg font-bold text-secondary-color mt-6 mb-2 border-t pt-4">Shipping & Logistics</h3>
+                        
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Origin City (for shipping cost calculation)</label>
+                            <input type="text" id="shipping-origin" required placeholder="e.g., Pretoria" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-color focus:border-primary-color">
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Estimated Parcel Weight (kg)</label>
+                            <input type="number" id="parcel-weight" required min="0.1" step="0.1" value="1.0" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-color focus:border-primary-color">
+                        </div>
+                        
                         <div class="mb-4">
                             <label class="block text-sm font-medium text-gray-700 mb-1">Condition</label>
-                            <select id="item-condition" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                            <select id="item-condition" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-color focus:border-primary-color">
                                 <option value="New">Brand New (Sealed)</option>
                                 <option value="LikeNew" selected>Used - Like New</option>
                                 <option value="Good">Used - Good</option>
@@ -968,20 +1042,20 @@
                         <div class="mb-4">
                             <label class="block text-sm font-medium text-gray-700 mb-1">Starting Bid (R)</label>
                             <input type="number" id="starting-bid" required min="${BID_INCREMENT_ZAR}" value="5000"
-                                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-color focus:border-primary-color">
                             <p class="text-xs text-gray-500 mt-1">Bids are stored in ZAR (R).</p>
                         </div>
 
                         <div class="mb-6">
                             <label class="block text-sm font-medium text-gray-700 mb-1">Auction Duration (Days)</label>
-                            <select id="auction-duration" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500">
+                            <select id="auction-duration" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-color focus:border-primary-color">
                                 <option value="1">1 Day</option>
                                 <option value="3" selected>3 Days</option>
                             </select>
                         </div>
 
                         <button type="submit" id="submit-listing-btn"
-                            class="w-full py-3 bg-red-600 text-white text-lg font-bold rounded-xl shadow-lg hover:bg-red-700 transition">
+                            class="w-full py-3 text-white text-lg font-bold rounded-xl shadow-lg hover:opacity-90 transition" style="background-color:var(--primary-color);">
                             Submit Auction Listing
                         </button>
                         <p id="listing-status" class="text-center mt-3 text-sm hidden"></p>
@@ -1025,6 +1099,16 @@
                 btn.disabled = false;
                 return;
             }
+            
+            const parcelWeight = parseFloat(document.getElementById('parcel-weight').value);
+            if (isNaN(parcelWeight) || parcelWeight <= 0) {
+                 statusEl.textContent = 'Error: Parcel weight must be a positive number.';
+                 statusEl.classList.remove('text-gray-600');
+                 statusEl.classList.add('text-red-600');
+                 btn.disabled = false;
+                 return;
+            }
+
 
             const listingData = {
                 itemName: document.getElementById('item-name').value,
@@ -1035,6 +1119,11 @@
                 condition: document.getElementById('item-condition').value,
                 startingBid: parseInt(document.getElementById('starting-bid').value),
                 durationDays: parseInt(document.getElementById('auction-duration').value),
+                
+                // NEW SHIPPING FIELDS
+                shippingOrigin: document.getElementById('shipping-origin').value,
+                parcelWeight: parcelWeight,
+                
                 hostId: userId,
                 hostName: userEmailOrId, // Use authenticated user email/ID
                 createdAt: new Date().getTime(),
@@ -1105,17 +1194,27 @@
             // Generate Lot Details HTML
             const lotDetailsHtml = listing.lotDetails ? `
                 <div class="mt-4 border-t border-gray-200 pt-4">
-                    <h3 class="text-lg font-bold text-gray-800 mb-2">Lot Contents:</h3>
+                    <h3 class="text-lg font-bold text-secondary-color mb-2">Lot Contents:</h3>
                     <ul class="list-disc list-inside space-y-1 text-sm text-gray-600 pl-4">
                         ${listing.lotDetails.split('\n').filter(item => item.trim() !== '').map(item => `<li>${item.trim()}</li>`).join('')}
                     </ul>
                 </div>
             ` : '';
 
+            // NEW: Shipping details display
+            const shippingInfoHtml = `
+                <div class="mt-4 border-t border-gray-200 pt-4 text-sm">
+                    <p class="font-bold text-secondary-color">Shipping Details:</p>
+                    <p class="text-gray-600">Origin: <strong>${listing.shippingOrigin}</strong></p>
+                    <p class="text-gray-600">Weight: <strong>${listing.parcelWeight} kg</strong></p>
+                    <p class="text-primary-color mt-2 font-bold">Shipping Cost: <span id="shipping-cost-display">${formatCurrency(APP_STATE.liveAuctionData.shippingCost)}</span></p>
+                </div>
+            `;
+            
             let content = `
                 <div class="p-4 app-view active">
                     <div class="flex justify-between items-center mb-2">
-                        <h2 class="text-2xl font-bold text-gray-900">${listing.itemName}</h2>
+                        <h2 class="text-2xl font-bold text-secondary-color">${listing.itemName}</h2>
                         <span id="item-condition" class="condition-badge bg-green-100 text-green-700">${listing.condition}</span>
                     </div>
                     <p class="text-gray-600 mb-4 text-sm">${listing.description}</p>
@@ -1126,18 +1225,33 @@
                         <img src="${imageSrc}" alt="Auction Item" class="w-full h-auto object-contain max-h-48" onerror="this.onerror=null; this.src='https://placehold.co/420x280/D1D5DB/1F2937?text=Image+Load+Failed';" >
                     </div>
                     
-                    <div class="mx-0 p-4 mb-4 bg-red-50 border-2 border-red-300 rounded-xl shadow-lg">
+                    <!-- Shipping Calculation Panel -->
+                    <div class="p-4 bg-gray-50 border border-gray-200 rounded-xl mb-4">
+                        <h3 class="font-bold text-lg mb-2 text-secondary-color">Calculate Shipping</h3>
+                        <div class="flex space-x-2">
+                            <input type="text" id="destination-city-input" placeholder="Your City (e.g., Cape Town)" 
+                                class="flex-grow p-2 border border-gray-300 rounded-lg text-sm focus:ring-primary-color" value="${APP_STATE.shippingDestination}">
+                            <button onclick="handleShippingCalculation('${listing.shippingOrigin}', ${listing.parcelWeight})" 
+                                class="py-2 px-4 bg-secondary-color text-white text-sm font-semibold rounded-lg hover:opacity-90 transition">
+                                Calculate
+                            </button>
+                        </div>
+                        ${shippingInfoHtml}
+                    </div>
+
+
+                    <div class="mx-0 p-4 mb-4" style="background-color:#F5F5F5; border: 2px solid var(--primary-color); border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
                         <div class="flex justify-between items-center mb-2">
                             <p class="text-sm font-medium text-gray-600">Current Highest Bid</p>
                             <p class="text-sm font-medium text-gray-600">Time Remaining</p>
                         </div>
                         <div class="flex justify-between items-end">
                             <div class="flex flex-col">
-                                <span id="current-bid" class="text-4xl font-extrabold text-red-600">...</span>
+                                <span id="current-bid" class="text-4xl font-extrabold" style="color:var(--primary-color);">...</span>
                                 <span id="highest-bidder" class="text-xs text-gray-500 mt-1">Highest Bidder: ...</span>
                             </div>
                             
-                            <span id="timer-display" class="text-3xl font-extrabold text-red-600 timer-glow">00:00:15</span>
+                            <span id="timer-display" class="text-3xl font-extrabold text-primary-color timer-glow">00:00:15</span>
                         </div>
                     </div>
 
@@ -1145,21 +1259,21 @@
                     <div class="border-t border-gray-100 bg-white pt-4">
                         <div id="status-message" class="text-center text-sm mb-3 text-red-600 font-semibold hidden"></div>
 
-                        <div class="mb-3 p-2 text-center bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700 font-semibold">
+                        <div class="mb-3 p-2 text-center bg-blue-50 border border-blue-200 rounded-lg text-sm text-secondary-color font-semibold">
                             Bidding as: <span id="user-display">${userEmailOrId}</span>
                         </div>
 
                         <div class="flex space-x-2 mb-3">
-                            <button onclick="setBidAmount(500)" class="w-1/3 py-2 text-sm rounded-lg bg-gray-100 text-gray-700 hover:bg-red-50 transition duration-150 border">+<span class="currency-symbol">${CURRENCIES[currentCurrencyCode].symbol}</span>500</button>
-                            <button onclick="setBidAmount(1000)" class="w-1/3 py-2 text-sm rounded-lg bg-gray-100 text-gray-700 hover:bg-red-50 transition duration-150 border">+<span class="currency-symbol">${CURRENCIES[currentCurrencyCode].symbol}</span>1,000</button>
-                            <button onclick="setBidAmount(2500)" class="w-1/3 py-2 text-sm rounded-lg bg-gray-100 text-gray-700 hover:bg-red-50 transition duration-150 border">+<span class="currency-symbol">${CURRENCIES[currentCurrencyCode].symbol}</span>2,500</button>
+                            <button onclick="setBidAmount(500)" class="w-1/3 py-2 text-sm rounded-lg bg-gray-100 text-secondary-color hover:bg-gray-200 transition duration-150 border">+<span class="currency-symbol">${CURRENCIES[currentCurrencyCode].symbol}</span>500</button>
+                            <button onclick="setBidAmount(1000)" class="w-1/3 py-2 text-sm rounded-lg bg-gray-100 text-secondary-color hover:bg-gray-200 transition duration-150 border">+<span class="currency-symbol">${CURRENCIES[currentCurrencyCode].symbol}</span>1,000</button>
+                            <button onclick="setBidAmount(2500)" class="w-1/3 py-2 text-sm rounded-lg bg-gray-100 text-secondary-color hover:bg-gray-200 transition duration-150 border">+<span class="currency-symbol">${CURRENCIES[currentCurrencyCode].symbol}</span>2,500</button>
                         </div>
 
                         <div class="flex space-x-2">
                             <input type="number" id="bid-input" placeholder="Your Bid (Min: ...)"
-                                class="flex-grow p-3 border border-gray-300 rounded-xl focus:ring-red-500 focus:border-red-500 text-lg">
+                                class="flex-grow p-3 border border-gray-300 rounded-xl focus:ring-primary-color focus:border-primary-color text-lg">
                             <button id="place-bid-btn" onclick="placeBid()"
-                                class="bid-button w-2/5 bg-red-600 text-white rounded-xl text-lg font-bold">
+                                class="bid-button w-2/5 text-white rounded-xl text-lg font-bold">
                                 Bid
                             </button>
                         </div>
@@ -1170,12 +1284,51 @@
             document.getElementById('app-content').innerHTML = header + content;
             
             // Re-bind click event for Bid Log button
-             document.querySelector('header .flex.items-center.space-x-3').innerHTML += `<button onclick="document.getElementById('bidLogModal').classList.remove('hidden')" class="text-gray-500 hover:text-red-500 ml-3">
+             document.querySelector('header .flex.items-center.space-x-3').innerHTML += `<button onclick="document.getElementById('bidLogModal').classList.remove('hidden')" class="text-gray-500 hover:text-primary-color ml-3">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                 </button>`;
 
             setupAuctionListener(auctionId, listing);
         }
+        
+        // NEW: Handles the bidder's request to calculate shipping
+        window.handleShippingCalculation = function(origin, weight) {
+            const destinationInput = document.getElementById('destination-city-input');
+            const destinationCity = destinationInput.value.trim();
+            const statusMessageEl = document.getElementById('status-message');
+            
+            if (!destinationCity) {
+                statusMessageEl.textContent = 'Error: Please enter your city.';
+                statusMessageEl.classList.remove('hidden', 'text-green-600');
+                statusMessageEl.classList.add('text-red-600');
+                return;
+            }
+            
+            const cost = calculateShippingCost(origin, destinationCity, weight);
+            
+            APP_STATE.liveAuctionData.shippingCost = cost;
+            APP_STATE.shippingDestination = destinationCity;
+
+            document.getElementById('shipping-cost-display').textContent = formatCurrency(cost);
+            
+            let message = '';
+            if (cost === 0) {
+                 message = `Shipping calculated! Cost is ${formatCurrency(cost)} (Local Pickup).`;
+                 statusMessageEl.classList.remove('text-red-600');
+                 statusMessageEl.classList.add('text-green-600');
+            } else if (weight <= 5) {
+                message = `Shipping calculated! Cost is ${formatCurrency(cost)} (PUDO Flat Rate).`;
+                statusMessageEl.classList.remove('text-red-600');
+                 statusMessageEl.classList.add('text-green-600');
+            } else {
+                 message = `Shipping calculated! Cost is ${formatCurrency(cost)} (Courier Rate).`;
+                 statusMessageEl.classList.remove('text-red-600');
+                 statusMessageEl.classList.add('text-green-600');
+            }
+            
+            statusMessageEl.textContent = message;
+            statusMessageEl.classList.remove('hidden');
+        };
 
         // Adapted from previous logic
         window.setBidAmount = function (offsetZAR) {
@@ -1204,7 +1357,8 @@
                     currentBid: data.currentBid || listing.startingBid,
                     highestBidder: data.highestBidder || 'No Bids Yet',
                     status: data.status || 'LIVE',
-                    bids: data.bids || []
+                    bids: data.bids || [],
+                    shippingCost: APP_STATE.liveAuctionData.shippingCost // Maintain the currently calculated cost
                 };
 
                 // Update UI elements
@@ -1216,6 +1370,13 @@
                 document.getElementById('highest-bidder').innerHTML = `Highest Bidder: ${APP_STATE.liveAuctionData.highestBidder}`;
                 document.getElementById('min-bid-display').innerHTML = `${minNextBidDisplay} (Increment: <span class="currency-symbol">${CURRENCIES[currentCurrencyCode].symbol}</span>${bidIncrementDisplay})`;
                 document.getElementById('bid-input').placeholder = `Your Bid (Min: ${minNextBidDisplay})`;
+                
+                // Update shipping cost display if calculation has occurred
+                const shippingCostDisplayEl = document.getElementById('shipping-cost-display');
+                if(shippingCostDisplayEl) {
+                    shippingCostDisplayEl.textContent = formatCurrency(APP_STATE.liveAuctionData.shippingCost);
+                }
+
 
                 // Render History
                 const bidHistoryListEl = document.getElementById('bid-history-list');
@@ -1224,11 +1385,11 @@
                 reversedBids.forEach(bid => {
                     const isCurrentUser = bid.bidder === userEmailOrId;
                     const listItem = document.createElement('li');
-                    listItem.className = `text-sm p-2 rounded-lg flex justify-between ${isCurrentUser ? 'bg-red-100 border border-red-300' : 'bg-gray-50'}`;
+                    listItem.className = `text-sm p-2 rounded-lg flex justify-between ${isCurrentUser ? 'bg-primary-color/10 border border-primary-color/50' : 'bg-gray-50'}`;
                     const bidTime = new Date(bid.time).toLocaleTimeString();
                     listItem.innerHTML = `
                         <span class="font-medium text-gray-700">${bid.bidder}</span>
-                        <span class="font-bold ${isCurrentUser ? 'text-red-700' : 'text-gray-800'}">${formatCurrency(bid.amount)}</span>
+                        <span class="font-bold ${isCurrentUser ? 'text-secondary-color' : 'text-gray-800'}">${formatCurrency(bid.amount)}</span>
                         <span class="text-xs text-gray-500">${bidTime}</span>
                     `;
                     bidHistoryListEl.appendChild(listItem);
@@ -1276,6 +1437,12 @@
             // Clear timer before rendering new view
             clearInterval(APP_STATE.timerInterval);
             APP_STATE.timerInterval = null;
+            
+            // Reset shipping cost when leaving the live auction view
+            if (currentView !== 'live_auction') {
+                APP_STATE.liveAuctionData.shippingCost = 0;
+            }
+
 
             switch (currentView) {
                 case 'bidder_dashboard':
