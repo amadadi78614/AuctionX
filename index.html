@@ -127,6 +127,7 @@
             newListingImage: null, // To temporarily hold the Base64 image data
             creationMode: 'single', // Default mode for auction creation
             shippingDestination: '', // NEW: Bidder's input for shipping destination
+            activeAuctionCount: 0, // NEW: Tracks the number of live auctions for notifications
         };
 
         // --- FIRESTORE CONFIG AND SETUP ---
@@ -335,6 +336,25 @@
             APP_STATE.view = view;
             APP_STATE.currentAuctionId = auctionId;
             renderApp();
+        }
+        
+        /**
+         * @description Requests browser permission and sends a system notification.
+         * @param {string} title
+         * @param {string} body
+         */
+        window.sendNotification = function(title, body) {
+            if (!("Notification" in window)) {
+                console.log("Browser does not support desktop notification");
+            } else if (Notification.permission === "granted") {
+                new Notification(title, { body: body, icon: '/path/to/icon.png' });
+            } else if (Notification.permission !== "denied") {
+                Notification.requestPermission().then(function (permission) {
+                    if (permission === "granted") {
+                        new Notification(title, { body: body, icon: '/path/to/icon.png' });
+                    }
+                });
+            }
         }
 
         // --- TIMER & AUCTION END LOGIC (Simplified for this file size) ---
@@ -802,6 +822,14 @@
             let content = `
                 <div class="p-4 app-view active">
                     <h2 class="text-2xl font-bold text-secondary-color mb-4">Bidding Portal</h2>
+                    
+                    <!-- Notification Banner and Permission Check -->
+                    <div id="new-auction-alert" class="hidden p-3 mb-4 bg-primary-color/10 border border-primary-color rounded-lg text-secondary-color font-semibold text-sm justify-between items-center">
+                        <span id="alert-message"></span>
+                        <button onclick="document.getElementById('new-auction-alert').classList.add('hidden')" class="text-secondary-color hover:text-red-600">
+                            &times;
+                        </button>
+                    </div>
 
                     <div class="flex border-b border-gray-200 mb-4">
                         <button id="bidder-tab-live" onclick="switchBidderTab('live')" class="tab-button w-1/2 py-2 text-center font-semibold transition active">Live Auctions</button>
@@ -832,6 +860,11 @@
                 loadBidderAuctions(tabName);
             }
             
+            // Check Notification Permission on load
+            if (Notification.permission !== "granted" && Notification.permission !== "denied") {
+                 window.sendNotification("AuctionX", "Enable notifications to get real-time alerts on new auctions!");
+            }
+            
             loadBidderAuctions('live');
         }
 
@@ -842,6 +875,7 @@
             if (!db) return;
 
             try {
+                // Fetch listings and auction data
                 const listingsSnapshot = await getDocs(collection(db, LISTINGS_COLLECTION));
                 const auctionsSnapshot = await getDocs(collection(db, AUCTIONS_COLLECTION));
 
@@ -852,6 +886,7 @@
                 auctionsSnapshot.forEach(doc => allAuctions[doc.id] = doc.data());
 
                 let filteredListings = [];
+                let newActiveCount = 0; // NEW: Count current live auctions
 
                 for (const id in allAuctions) {
                     const auction = allAuctions[id];
@@ -860,20 +895,40 @@
                     if (!listing) continue; 
 
                     const isLive = auction.status === 'LIVE';
-                    // Check if the current authenticated user (by email) has bid
                     const hasUserBid = auction.bids.some(bid => bid.bidder === userEmailOrId);
 
                     const listingData = { id, ...listing, ...auction };
                     
                     if (statusType === 'live' && isLive) {
                         filteredListings.push(listingData);
+                        newActiveCount++; // Increment count for notification check
                     } else if (statusType === 'history') {
-                        // For history, show any ended auction the user bid on
                         if (auction.status.startsWith('ENDED') && hasUserBid) {
                             filteredListings.push(listingData);
                         }
                     }
                 }
+                
+                // --- NEW NOTIFICATION LOGIC ---
+                if (statusType === 'live' && APP_STATE.activeAuctionCount < newActiveCount) {
+                    const newCount = newActiveCount - APP_STATE.activeAuctionCount;
+                    const message = `${newCount} new auction${newCount > 1 ? 's are' : ' is'} now LIVE!`;
+                    
+                    // 1. Send system notification (if permitted)
+                    window.sendNotification("New Auction Alert!", message);
+                    
+                    // 2. Display in-app banner
+                    const alertEl = document.getElementById('new-auction-alert');
+                    const alertMsgEl = document.getElementById('alert-message');
+                    if (alertEl && alertMsgEl) {
+                        alertMsgEl.textContent = message;
+                        alertEl.classList.remove('hidden');
+                        alertEl.classList.add('flex'); // Use flex to show the banner
+                    }
+                }
+                APP_STATE.activeAuctionCount = newActiveCount; // Update state count
+                // --- END NOTIFICATION LOGIC ---
+
 
                 if (filteredListings.length === 0) {
                     container.innerHTML = `<p class="text-center p-8 text-gray-500">No ${statusType} auctions found.</p>`;
